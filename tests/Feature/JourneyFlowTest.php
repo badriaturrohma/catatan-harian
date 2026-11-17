@@ -141,4 +141,78 @@ class JourneyFlowTest extends TestCase
 
         $response->assertSessionHas('error');
     }
+
+    public function test_officer_can_resolve_qr_by_token_hash(): void
+    {
+        $officer = User::where('role', 'petugas')->firstOrFail();
+        $assignment = OfficerAssignment::where('user_id', $officer->id)->firstOrFail();
+        $santri = Santri::where('is_active', true)->firstOrFail();
+        $credential = $santri->activeQrCredential;
+
+        $response = $this->actingAs($officer)->postJson(route('officer.qr.resolve'), [
+            'token' => $credential->token_hash,
+            'assignment_id' => $assignment->id,
+        ]);
+
+        $response->assertStatus(200);
+        $response->assertJson([
+            'success' => true,
+            'data' => [
+                'santri' => [
+                    'id' => $santri->id,
+                    'name' => $santri->name,
+                ],
+            ],
+        ]);
+    }
+
+    public function test_officer_can_resolve_santri_by_niup_fallback(): void
+    {
+        $officer = User::where('role', 'petugas')->firstOrFail();
+        $assignment = OfficerAssignment::where('user_id', $officer->id)->firstOrFail();
+        $santri = Santri::where('is_active', true)->firstOrFail();
+
+        $response = $this->actingAs($officer)->postJson(route('officer.qr.resolve'), [
+            'token' => $santri->niup,
+            'assignment_id' => $assignment->id,
+        ]);
+
+        $response->assertStatus(200);
+        $response->assertJson([
+            'success' => true,
+            'data' => [
+                'santri' => [
+                    'id' => $santri->id,
+                    'name' => $santri->name,
+                ],
+            ],
+        ]);
+    }
+
+    public function test_pengurus_can_access_scanner_and_resolve_qr(): void
+    {
+        $pengurus = User::where('role', 'pengurus')->firstOrFail();
+        $santri = Santri::where('is_active', true)->firstOrFail();
+        $credential = $santri->activeQrCredential;
+
+        // Pengurus visits scan page
+        $pageResponse = $this->actingAs($pengurus)->get(route('officer.scan'));
+        $pageResponse->assertStatus(200);
+
+        // Pengurus resolves QR code
+        $resolveResponse = $this->actingAs($pengurus)->postJson(route('officer.qr.resolve'), [
+            'token' => $credential->token_hash,
+        ]);
+
+        $resolveResponse->assertStatus(200);
+        $resolveResponse->assertJson([
+            'success' => true,
+            'data' => [
+                'santri' => [
+                    'id' => $santri->id,
+                    'name' => $santri->name,
+                ],
+            ],
+        ]);
+    }
 }

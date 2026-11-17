@@ -31,17 +31,46 @@ class JourneyService
     {
         $assignment = OfficerAssignment::with('location')->findOrFail($assignmentId);
 
-        if ($assignment->user_id !== $officer->id || ! $assignment->isValidNow()) {
+        if (($assignment->user_id !== $officer->id && ! $officer->isPengurus()) || ! $assignment->is_active) {
             throw ValidationException::withMessages([
                 'assignment' => ['Penugasan petugas tidak aktif atau lokasi tidak sesuai.'],
             ]);
         }
 
-        $tokenHash = hash('sha256', trim($token));
+        $cleanedToken = trim($token);
+        $tokenHash = hash('sha256', $cleanedToken);
+
         $credential = QrCredential::with('santri.campus', 'santri.program', 'santri.room')
-            ->where('token_hash', $tokenHash)
+            ->where(function ($query) use ($tokenHash, $cleanedToken) {
+                $query->where('token_hash', $tokenHash)
+                    ->orWhere('token_hash', $cleanedToken);
+
+                if (str_starts_with($cleanedToken, 'SNT-')) {
+                    $raw = substr($cleanedToken, 4);
+                    $query->orWhere('token_hash', $raw);
+                }
+            })
             ->where('is_active', true)
             ->first();
+
+        // Fallback by santri NIUP if token is not found directly
+        if (! $credential) {
+            $santriCandidate = Santri::with(['campus', 'program', 'room', 'activeQrCredential'])
+                ->where('is_active', true)
+                ->where(function ($q) use ($cleanedToken) {
+                    $q->where('niup', $cleanedToken)
+                        ->orWhere('niup', str_replace('SNT-', '', $cleanedToken));
+                })
+                ->first();
+
+            if ($santriCandidate) {
+                $credential = $santriCandidate->activeQrCredential;
+                if (! $credential) {
+                    $generated = QrCredential::generateForSantri($santriCandidate);
+                    $credential = $generated['credential']->load('santri.campus', 'santri.program', 'santri.room');
+                }
+            }
+        }
 
         if (! $credential || ! $credential->santri || ! $credential->santri->is_active) {
             throw ValidationException::withMessages([
@@ -191,7 +220,7 @@ class JourneyService
         return DB::transaction(function () use ($data, $actor, $requestId) {
             $assignment = OfficerAssignment::with('location')->lockForUpdate()->findOrFail($data['assignment_id']);
 
-            if ($assignment->user_id !== $actor->id || ! $assignment->isValidNow()) {
+            if (($assignment->user_id !== $actor->id && ! $actor->isPengurus()) || ! $assignment->is_active) {
                 throw new Exception('Penugasan petugas tidak aktif atau telah kedaluwarsa.');
             }
 

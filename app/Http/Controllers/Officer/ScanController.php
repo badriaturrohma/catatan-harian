@@ -27,7 +27,24 @@ class ScanController extends Controller
             ->where('is_active', true)
             ->get();
 
-        $activeAssignment = $user->activeAssignment()->with('location')->first();
+        $activeAssignment = $user->activeAssignment()->with('location.campus')->first() ?? $assignments->first();
+
+        // If pengurus has no assignments yet, auto-assign to the first active pos location
+        if (! $activeAssignment && $user->isPengurus()) {
+            $firstLocation = \App\Models\Location::with('campus')->where('is_active', true)->first();
+            if ($firstLocation) {
+                $activeAssignment = OfficerAssignment::create([
+                    'user_id' => $user->id,
+                    'location_id' => $firstLocation->id,
+                    'valid_from' => now()->subDay(),
+                    'valid_until' => now()->addYear(),
+                    'is_active' => true,
+                    'notes' => 'Akses Monitoring Pengurus',
+                ])->load('location.campus');
+
+                $assignments = collect([$activeAssignment]);
+            }
+        }
 
         // Recent events recorded by this officer today
         $recentEvents = JourneyEvent::with(['journey.santri', 'location'])
@@ -49,13 +66,43 @@ class ScanController extends Controller
     {
         $validated = $request->validate([
             'token' => ['required', 'string'],
-            'assignment_id' => ['required', 'exists:officer_assignments,id'],
+            'assignment_id' => ['nullable', 'exists:officer_assignments,id'],
         ]);
+
+        $assignmentId = $validated['assignment_id'] ?? null;
+        if (! $assignmentId) {
+            $userAssignment = $request->user()->activeAssignment()->first()
+                ?? OfficerAssignment::where('user_id', $request->user()->id)->where('is_active', true)->first();
+
+            if (! $userAssignment && $request->user()->isPengurus()) {
+                $firstLoc = \App\Models\Location::where('is_active', true)->first();
+                if ($firstLoc) {
+                    $userAssignment = OfficerAssignment::firstOrCreate([
+                        'user_id' => $request->user()->id,
+                        'location_id' => $firstLoc->id,
+                    ], [
+                        'valid_from' => now()->subDay(),
+                        'valid_until' => now()->addYear(),
+                        'is_active' => true,
+                        'notes' => 'Akses Monitoring Pengurus',
+                    ]);
+                }
+            }
+
+            $assignmentId = $userAssignment?->id;
+        }
+
+        if (! $assignmentId) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Penugasan pos aktif tidak ditemukan untuk akun Anda.',
+            ], 422);
+        }
 
         try {
             $result = $this->journeyService->resolveQrToken(
                 $validated['token'],
-                (int) $validated['assignment_id'],
+                (int) $assignmentId,
                 $request->user()
             );
 
